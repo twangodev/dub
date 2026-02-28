@@ -1,0 +1,31 @@
+from dub.config import Settings
+from dub.providers.stt.whisper import WhisperSTT
+from dub.providers.separation.sam_audio import SAMAudioSeparator
+from dub.providers.translation.gemini import GeminiTranslation
+from dub.providers.tts.fish_audio import FishAudioTTS
+
+
+def create_stt(settings: Settings) -> WhisperSTT:
+    if settings.stt_backend == "whisper":
+        return WhisperSTT(whisper_url=settings.whisper_url)
+    raise ValueError(f"Unknown STT backend: {settings.stt_backend}")
+
+
+def create_separator(settings: Settings) -> SAMAudioSeparator | None:
+    if settings.separation_backend == "none":
+        return None
+    if settings.separation_backend == "sam_audio":
+        return SAMAudioSeparator(sam_audio_url=settings.sam_audio_url)
+    raise ValueError(f"Unknown separation backend: {settings.separation_backend}")
+
+
+def create_translator(settings: Settings) -> GeminiTranslation:
+    if settings.translation_backend == "gemini":
+        return GeminiTranslation(api_key=settings.gemini_api_key)
+    raise ValueError(f"Unknown translation backend: {settings.translation_backend}")
+
+
+def create_tts(settings: Settings) -> FishAudioTTS:
+    if settings.tts_backend == "fish_audio":
+        return FishAudioTTS(api_key=settings.fish_audio_api_key)
+    raise ValueError(f"Unknown TTS backend: {settings.tts_backend}")

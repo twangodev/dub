@@ -1,0 +1,36 @@
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  api:
+    build:
+      context: .
+      target: api
+    ports:
+      - "8000:8000"
+    env_file: .env
+    environment:
+      REDIS_URL: redis://redis:6379
+      DATA_DIR: /app/data/jobs
+    volumes:
+      - job-data:/app/data
+    depends_on:
+      - redis
+
+  worker:
+    build:
+      context: .
+      target: worker
+    env_file: .env
+    environment:
+      REDIS_URL: redis://redis:6379
+      DATA_DIR: /app/data/jobs
+    volumes:
+      - job-data:/app/data
+    depends_on:
+      - redis
+
+volumes:
+  job-data:
