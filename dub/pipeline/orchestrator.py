@@ -28,8 +28,8 @@ MAX_EVAL_ATTEMPTS = 10              # max TTS + eval retries
 # Duration-fitting parameters
 DURATION_TOLERANCE = 0.10  # ±10%
 MAX_FIT_ATTEMPTS = 5       # binary search iterations
-SPEED_MIN = 0.75           # slowest allowed
-SPEED_MAX = 1.5            # fastest allowed
+SPEED_MIN = 0.85           # slowest allowed
+SPEED_MAX = 1.3            # fastest allowed
 
 
 async def synthesize_to_fit(
