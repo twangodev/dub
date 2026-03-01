@@ -1,5 +1,6 @@
 import json
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 
 from dub.models.schemas import Segment, TranslatedSegment, Word
@@ -23,7 +24,12 @@ PAUSE_THRESHOLD = 0.7
 # Fluency evaluation parameters
 EVAL_SCRIPT_TARGET_DURATION = 30.0  # seconds of text to generate
 MIN_FLUENCY_SCORE = 98.0            # early-stop threshold (0-100 scale)
-MAX_EVAL_ATTEMPTS = 10              # max TTS + eval retries
+
+# Iterative refinement parameters
+MAX_GENERATIONS = 4
+SAMPLES_PER_GENERATION = 10   # large pool for better selection
+TOP_K_SAMPLES = 5             # top 50% for rich training data
+PLATEAU_THRESHOLD = 2.0       # stop if absolute score improves < 2 points
 
 # Duration-fitting parameters
 DURATION_TOLERANCE = 0.10  # ±10%
@@ -174,6 +180,219 @@ def save_audio(path: Path, audio_bytes: bytes) -> None:
     path.write_bytes(audio_bytes)
 
 
+@dataclass
+class GenerationResult:
+    generation: int
+    model_id: str | None
+    best_score: float
+    champion_audio: bytes
+    champion_transcript: str
+    ranked_samples: list[tuple[bytes, str]]  # (audio, transcript) sorted by wins desc
+
+
+async def run_round_robin(
+    evaluator: GeminiAudioEvaluator,
+    samples: list[tuple[bytes, str]],
+    text: str,
+    target_lang: str,
+    source_lang: str,
+) -> list[tuple[bytes, str]]:
+    """Compare all sample pairs via pairwise Gemini calls, return sorted by win count (most wins first)."""
+    n = len(samples)
+    wins = [0] * n
+
+    # Build all pairs
+    pairs: list[tuple[int, int]] = []
+    for i in range(n):
+        for j in range(i + 1, n):
+            pairs.append((i, j))
+
+    logger.info(f"[RoundRobin] Comparing {len(pairs)} pairs from {n} samples")
+
+    # Run all pairwise comparisons concurrently
+    async def compare(i: int, j: int) -> tuple[int, int, str]:
+        result = await evaluator.compare_pairwise(
+            samples[i][0], samples[j][0], text, target_lang, source_lang,
+        )
+        return (i, j, result.winner)
+
+    results = await asyncio.gather(
+        *(compare(i, j) for i, j in pairs),
+        return_exceptions=True,
+    )
+
+    for res in results:
+        if isinstance(res, Exception):
+            logger.warning(f"[RoundRobin] Pairwise comparison failed: {res}")
+            continue
+        i, j, winner = res
+        if winner == "A":
+            wins[i] += 1
+        else:
+            wins[j] += 1
+
+    # Sort by wins descending
+    indexed = list(enumerate(wins))
+    indexed.sort(key=lambda x: x[1], reverse=True)
+
+    win_summary = ", ".join(
+        f"sample {idx} wins={w}" for idx, w in indexed
+    )
+    logger.info(f"[RoundRobin] Results: {win_summary}")
+
+    return [samples[idx] for idx, _ in indexed]
+
+
+async def run_iterative_refinement(
+    ctx: JobContext,
+    initial_model_id: str,
+    eval_script: str,
+    eval_duration: float,
+    evaluator: GeminiAudioEvaluator,
+    source_lang: str,
+) -> tuple[str | None, list[str]]:
+    """Run iterative multi-generation voice clone refinement.
+
+    Returns (final_model_id, intermediate_model_ids_to_delete).
+    """
+    generation_results: list[GenerationResult] = []
+    intermediate_models: list[str] = []
+    current_model_id = initial_model_id
+
+    for gen in range(MAX_GENERATIONS):
+        logger.info(f"[Refinement] === Generation {gen} ===")
+        await ctx.emit_progress(
+            "fluency_eval", "progress",
+            f"Generation {gen}/{MAX_GENERATIONS}",
+        )
+
+        # Generate SAMPLES_PER_GENERATION samples
+        samples: list[tuple[bytes, str]] = []
+        for s in range(SAMPLES_PER_GENERATION):
+            audio = await synthesize_to_fit(
+                ctx.tts, eval_script, eval_duration,
+                reference_id=current_model_id,
+            )
+            samples.append((audio, eval_script))
+
+        logger.info(f"[Refinement] Gen {gen}: generated {len(samples)} samples")
+
+        # Round-robin pairwise ranking
+        ranked = await run_round_robin(
+            evaluator, samples, eval_script, ctx.target_lang, source_lang,
+        )
+
+        champion_audio, champion_transcript = ranked[0]
+
+        # Absolute score on champion for plateau detection
+        score = await evaluator.evaluate(
+            champion_audio, eval_script, ctx.target_lang, source_lang,
+        )
+        logger.info(
+            f"[Refinement] Gen {gen} champion: overall={score.overall:.1f} "
+            f"(fluency={score.fluency:.1f}, naturalness={score.naturalness:.1f}, "
+            f"accent={score.accent_score:.1f}, clarity={score.clarity:.1f})"
+        )
+
+        gen_result = GenerationResult(
+            generation=gen,
+            model_id=current_model_id,
+            best_score=score.overall,
+            champion_audio=champion_audio,
+            champion_transcript=champion_transcript,
+            ranked_samples=ranked[:TOP_K_SAMPLES],
+        )
+        generation_results.append(gen_result)
+
+        # Log cross-generation progress
+        scores_str = " -> ".join(
+            f"Gen {r.generation}: {r.best_score:.1f}" for r in generation_results
+        )
+        logger.info(f"[Refinement] Progress: {scores_str}")
+
+        # Check stopping conditions
+        if score.overall >= MIN_FLUENCY_SCORE:
+            logger.info(
+                f"[Refinement] Early stop: score {score.overall:.1f} >= {MIN_FLUENCY_SCORE}"
+            )
+            break
+
+        if gen > 0:
+            improvement = score.overall - generation_results[gen - 1].best_score
+            if improvement < PLATEAU_THRESHOLD:
+                logger.info(
+                    f"[Refinement] Plateau: improvement {improvement:.1f} < {PLATEAU_THRESHOLD} (plateau)"
+                )
+                break
+
+        # Build training data for next generation clone
+        # Prior-gen bests (identity anchors) + current gen top-K
+        training_audio: list[bytes] = []
+        training_transcripts: list[str] = []
+
+        # Identity anchors: best from each prior generation
+        for prior in generation_results:
+            training_audio.append(prior.champion_audio)
+            training_transcripts.append(prior.champion_transcript)
+
+        # Current gen top-K
+        for audio, transcript in ranked[:TOP_K_SAMPLES]:
+            training_audio.append(audio)
+            training_transcripts.append(transcript)
+
+        # Create next-generation clone
+        next_model_id = await create_voice_clone_from_samples(
+            ctx.fish_audio_api_key,
+            audio_samples=training_audio,
+            transcripts=training_transcripts,
+            job_id=ctx.job_id,
+            label=f"gen{gen + 1}",
+        )
+
+        if next_model_id is None:
+            logger.warning(f"[Refinement] Gen {gen + 1} clone creation failed, stopping")
+            break
+
+        intermediate_models.append(next_model_id)
+        current_model_id = next_model_id
+
+    # Find best generation overall
+    best_gen = max(generation_results, key=lambda r: r.best_score)
+    logger.info(
+        f"[Refinement] Best generation: {best_gen.generation} "
+        f"(score={best_gen.best_score:.1f})"
+    )
+
+    # Create final fluent clone from best generation's top-K + best-of-each-gen anchors
+    final_audio: list[bytes] = []
+    final_transcripts: list[str] = []
+
+    # Identity anchors from each generation
+    for gr in generation_results:
+        final_audio.append(gr.champion_audio)
+        final_transcripts.append(gr.champion_transcript)
+
+    # Best generation's top-K samples
+    for audio, transcript in best_gen.ranked_samples:
+        final_audio.append(audio)
+        final_transcripts.append(transcript)
+
+    final_model_id = await create_voice_clone_from_samples(
+        ctx.fish_audio_api_key,
+        audio_samples=final_audio,
+        transcripts=final_transcripts,
+        job_id=ctx.job_id,
+        label="fluent",
+    )
+
+    if final_model_id:
+        logger.info(f"[Refinement] Final fluent clone created: {final_model_id}")
+    else:
+        logger.warning("[Refinement] Final fluent clone creation failed")
+
+    return final_model_id, intermediate_models
+
+
 async def run_dubbing_pipeline(ctx: JobContext) -> Path:
     """Execute the full dubbing pipeline."""
     logger.info(f"[Pipeline] Starting dubbing pipeline for job {ctx.job_id}")
@@ -224,7 +443,8 @@ async def run_dubbing_pipeline(ctx: JobContext) -> Path:
             voice_ref = extract_voice_sample(separated.speech_path)
     await ctx.emit_progress("voice_clone", "complete")
 
-    # 6a. Generate evaluation script and evaluate with Gemini
+    # 6a. Iterative multi-generation voice clone refinement
+    intermediate_models: list[str] = []
     if voice_model_id and ctx.gemini_api_key:
         await ctx.emit_progress("fluency_eval", "running")
         try:
@@ -246,66 +466,14 @@ async def run_dubbing_pipeline(ctx: JobContext) -> Path:
             evaluator = GeminiAudioEvaluator(ctx.gemini_api_key)
             source_lang = ctx.source_lang or "unknown"
 
-            best_audio: bytes | None = None
-            best_score = -1.0
-
-            for attempt in range(1, MAX_EVAL_ATTEMPTS + 1):
-                # Synthesize using the accent (first) clone
-                eval_audio = await synthesize_to_fit(
-                    ctx.tts, eval_script, EVAL_SCRIPT_TARGET_DURATION,
-                    reference_id=voice_model_id,
-                )
-
-                # Evaluate with Gemini
-                score = await evaluator.evaluate(
-                    eval_audio, eval_script, ctx.target_lang, source_lang,
-                )
-                logger.info(
-                    f"[Pipeline] Attempt {attempt}/{MAX_EVAL_ATTEMPTS}: "
-                    f"overall={score.overall:.1f} "
-                    f"(fluency={score.fluency:.1f}, naturalness={score.naturalness:.1f}, "
-                    f"accent={score.accent_score:.1f}, clarity={score.clarity:.1f}) "
-                    f"— {score.reasoning}"
-                )
-                await ctx.emit_progress(
-                    "fluency_eval", "progress",
-                    f"Attempt {attempt}/{MAX_EVAL_ATTEMPTS}: overall={score.overall:.1f}",
-                )
-
-                if score.overall > best_score:
-                    best_score = score.overall
-                    best_audio = eval_audio
-
-                if score.overall >= MIN_FLUENCY_SCORE:
-                    logger.info(
-                        f"[Pipeline] Early stop: score {score.overall:.1f} >= {MIN_FLUENCY_SCORE}"
-                    )
-                    break
-
-            logger.info(f"[Pipeline] Best fluency score: {best_score:.1f}")
-            await ctx.emit_progress("fluency_eval", "complete", f"best={best_score:.1f}")
-
-            # 6b. Create fluent clone from best sample
-            if best_audio is not None:
-                await ctx.emit_progress("fluent_clone", "running")
-                try:
-                    fluent_model_id = await create_voice_clone_from_samples(
-                        ctx.fish_audio_api_key,
-                        audio_samples=[best_audio],
-                        transcripts=[eval_script],
-                        job_id=ctx.job_id,
-                    )
-                    if fluent_model_id:
-                        logger.info(f"[Pipeline] Fluent clone created: {fluent_model_id}")
-                    else:
-                        logger.warning("[Pipeline] Fluent clone creation returned None")
-                except Exception:
-                    logger.exception("[Pipeline] Fluent clone creation failed, using accent clone")
-                    fluent_model_id = None
-                await ctx.emit_progress("fluent_clone", "complete")
+            fluent_model_id, intermediate_models = await run_iterative_refinement(
+                ctx, voice_model_id, eval_script, eval_duration,
+                evaluator, source_lang,
+            )
+            await ctx.emit_progress("fluency_eval", "complete")
 
         except Exception:
-            logger.exception("[Pipeline] Fluency evaluation failed, using accent clone")
+            logger.exception("[Pipeline] Iterative refinement failed, using accent clone")
             fluent_model_id = None
 
     # 7. TTS per segment — prefer fluent clone, fall back to accent clone
@@ -339,7 +507,9 @@ async def run_dubbing_pipeline(ctx: JobContext) -> Path:
     await mux_video(ctx.input_video, dubbed_audio_path, output_path)
     await ctx.emit_progress("mux", "complete")
 
-    # 10. Clean up voice clone models (both accent and fluent)
+    # 10. Clean up voice clone models (accent, intermediate, and fluent)
+    for mid in intermediate_models:
+        await delete_voice_clone(ctx.fish_audio_api_key, mid)
     if fluent_model_id:
         await delete_voice_clone(ctx.fish_audio_api_key, fluent_model_id)
     if voice_model_id:

@@ -194,6 +194,7 @@ async def create_voice_clone_from_samples(
     audio_samples: list[bytes],
     transcripts: list[str],
     job_id: str,
+    label: str = "fluent",
 ) -> str | None:
     """Create a voice model on Fish Audio from pre-generated audio samples.
 
@@ -202,7 +203,7 @@ async def create_voice_clone_from_samples(
     client = AsyncFishAudio(api_key=api_key)
     try:
         model = await client.voices.create(
-            title=f"dub-fluent-{job_id}",
+            title=f"dub-{label}-{job_id}",
             voices=audio_samples,
             texts=transcripts,
         )

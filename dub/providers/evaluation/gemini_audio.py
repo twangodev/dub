@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from typing import Literal
 
 from pydantic import BaseModel as PydanticBaseModel
 
@@ -52,6 +53,31 @@ class FluencyResponse(PydanticBaseModel):
     scores: FluencyScore
 
 
+PAIRWISE_PROMPT = """\
+You are a demanding {target_lang} language teacher. The student's native language \
+is {source_lang}. You will hear TWO recordings of the same passage read aloud:
+
+"{text}"
+
+Recording A is the first audio clip. Recording B is the second audio clip.
+
+Your job: which recording sounds MORE like a native {target_lang} speaker? \
+Consider accent authenticity, natural prosody, rhythm, and overall fluency. \
+Ignore minor volume or quality differences — focus solely on how native the \
+speech sounds.
+
+You MUST pick a winner — no ties allowed."""
+
+
+class PairwiseResult(PydanticBaseModel):
+    winner: Literal["A", "B"]
+    reasoning: str
+
+
+class PairwiseResponse(PydanticBaseModel):
+    result: PairwiseResult
+
+
 class GeminiAudioEvaluator:
     def __init__(self, api_key: str):
         self.api_key = api_key
@@ -88,3 +114,38 @@ class GeminiAudioEvaluator:
 
         result = FluencyResponse.model_validate_json(response.text)
         return result.scores
+
+    async def compare_pairwise(
+        self,
+        audio_a: bytes,
+        audio_b: bytes,
+        text: str,
+        target_lang: str,
+        source_lang: str,
+    ) -> PairwiseResult:
+        from google import genai
+        from google.genai import types as gtypes
+
+        client = genai.Client(api_key=self.api_key)
+        prompt = PAIRWISE_PROMPT.format(
+            target_lang=target_lang,
+            source_lang=source_lang,
+            text=text,
+        )
+
+        response = await asyncio.to_thread(
+            client.models.generate_content,
+            model=MODEL,
+            contents=[
+                prompt,
+                gtypes.Part.from_bytes(data=audio_a, mime_type="audio/wav"),
+                gtypes.Part.from_bytes(data=audio_b, mime_type="audio/wav"),
+            ],
+            config=gtypes.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=PairwiseResponse,
+            ),
+        )
+
+        result = PairwiseResponse.model_validate_json(response.text)
+        return result.result
