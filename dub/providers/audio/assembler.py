@@ -2,6 +2,8 @@ import asyncio
 import logging
 from pathlib import Path
 
+import ffmpeg
+
 from dub.models.schemas import TranslatedSegment
 
 logger = logging.getLogger(__name__)
@@ -35,39 +37,25 @@ async def assemble_audio(
         shutil.copy2(background_path, output_path)
         return
 
-    # Build FFmpeg command with complex filter
-    # Input 0 = background, Input 1..N = TTS segments
-    cmd = ["ffmpeg", "-y", "-i", str(background_path)]
-    for _, tts_path, _ in inputs:
-        cmd.extend(["-i", str(tts_path)])
+    # Build ffmpeg-python filter graph
+    background = ffmpeg.input(str(background_path))
+    mix_streams = [background.audio]
 
-    # Build filter: delay each TTS segment to its start time, then mix all
-    filter_parts = []
-    mix_inputs = ["[0:a]"]  # background is first mix input
-
-    for idx, (i, _, seg) in enumerate(inputs):
-        input_num = idx + 1  # 0 is background
+    for idx, (i, tts_path, seg) in enumerate(inputs):
         delay_ms = int(seg.start * 1000)
-        label = f"delayed{idx}"
-        filter_parts.append(f"[{input_num}:a]adelay={delay_ms}|{delay_ms}[{label}]")
-        mix_inputs.append(f"[{label}]")
+        tts_input = ffmpeg.input(str(tts_path))
+        delayed = tts_input.filter("adelay", f"{delay_ms}|{delay_ms}")
+        mix_streams.append(delayed)
 
-    num_streams = len(mix_inputs)
-    mix_str = "".join(mix_inputs)
-    filter_parts.append(f"{mix_str}amix=inputs={num_streams}:duration=longest:normalize=0")
+    num_streams = len(mix_streams)
+    mixed = ffmpeg.filter(mix_streams, "amix", inputs=num_streams, duration="longest", normalize=0)
 
-    filter_complex = ";".join(filter_parts)
-    cmd.extend(["-filter_complex", filter_complex, str(output_path)])
+    stream = ffmpeg.output(mixed, str(output_path)).overwrite_output()
 
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    _, stderr = await proc.communicate()
-
-    if proc.returncode != 0:
-        raise RuntimeError(f"FFmpeg assemble failed: {stderr.decode()}")
+    try:
+        await asyncio.to_thread(stream.run, capture_stdout=True, capture_stderr=True)
+    except ffmpeg.Error as e:
+        raise RuntimeError(f"FFmpeg assemble failed: {e.stderr.decode()}") from e
 
     logger.info(f"[Assemble] Assembled audio saved to {output_path}")
 
@@ -76,21 +64,24 @@ async def mux_video(video_path: Path, audio_path: Path, output_path: Path) -> No
     """Replace audio in video with dubbed audio using FFmpeg."""
     logger.info(f"[Mux] Replacing audio in {video_path}")
 
-    proc = await asyncio.create_subprocess_exec(
-        "ffmpeg", "-y",
-        "-i", str(video_path),
-        "-i", str(audio_path),
-        "-c:v", "copy",
-        "-map", "0:v:0",
-        "-map", "1:a:0",
-        "-shortest",
-        str(output_path),
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    _, stderr = await proc.communicate()
+    video = ffmpeg.input(str(video_path))
+    audio = ffmpeg.input(str(audio_path))
 
-    if proc.returncode != 0:
-        raise RuntimeError(f"FFmpeg mux failed: {stderr.decode()}")
+    stream = (
+        ffmpeg
+        .output(
+            video.video,
+            audio.audio,
+            str(output_path),
+            vcodec="copy",
+            shortest=None,
+        )
+        .overwrite_output()
+    )
+
+    try:
+        await asyncio.to_thread(stream.run, capture_stdout=True, capture_stderr=True)
+    except ffmpeg.Error as e:
+        raise RuntimeError(f"FFmpeg mux failed: {e.stderr.decode()}") from e
 
     logger.info(f"[Mux] Output video saved to {output_path}")
