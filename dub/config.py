@@ -5,13 +5,13 @@ class Settings(BaseSettings):
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
     # Provider backends
-    stt_backend: str = "whisper"
+    stt_backend: str = "qwen"
     separation_backend: str = "sam_audio"
     translation_backend: str = "gemini"
     tts_backend: str = "fish_audio"
 
     # External service URLs
-    whisper_url: str = "http://localhost:8001"
+    stt_url: str = "http://localhost:8001"
     sam_audio_url: str = "http://localhost:8002"
 
     # Infrastructure

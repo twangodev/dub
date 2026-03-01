@@ -24,6 +24,18 @@ services:
               count: 1
               capabilities: [gpu]
 
+  qwen-asr:
+    image: ghcr.io/twangodev/qwenasr-inference:latest
+    ports:
+      - "8001:8000"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
   api:
     build:
       context: .
@@ -34,12 +46,14 @@ services:
     environment:
       REDIS_URL: redis://redis:6379
       SAM_AUDIO_URL: http://sam-audio:8000
+      STT_URL: http://qwen-asr:8000
       DATA_DIR: /app/data/jobs
     volumes:
       - job-data:/app/data
     depends_on:
       - redis
       - sam-audio
+      - qwen-asr
 
   worker:
     build:
@@ -49,12 +63,14 @@ services:
     environment:
       REDIS_URL: redis://redis:6379
       SAM_AUDIO_URL: http://sam-audio:8000
+      STT_URL: http://qwen-asr:8000
       DATA_DIR: /app/data/jobs
     volumes:
       - job-data:/app/data
     depends_on:
       - redis
       - sam-audio
+      - qwen-asr
 
 volumes:
   job-data:
