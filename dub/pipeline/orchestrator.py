@@ -20,7 +20,7 @@ PAUSE_THRESHOLD = 0.7
 
 # Fluency evaluation parameters
 EVAL_SCRIPT_TARGET_DURATION = 30.0  # seconds of text to generate
-MIN_FLUENCY_SCORE = 9.0             # early-stop threshold
+MIN_FLUENCY_SCORE = 98.0            # early-stop threshold (0-100 scale)
 MAX_EVAL_ATTEMPTS = 10              # max TTS + eval retries
 
 
