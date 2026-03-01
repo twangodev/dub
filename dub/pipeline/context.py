@@ -25,10 +25,6 @@ class JobContext:
     # Redis connection for stream progress (set externally)
     _redis: object = None
 
-    @property
-    def audio_original(self) -> Path:
-        return self.job_dir / "audio_original.wav"
-
     async def emit_progress(self, stage: str, status: str, detail: str | None = None) -> None:
         event = ProgressEvent(stage=stage, status=status, detail=detail)
         logger.info(f"[Job {self.job_id}] {stage}: {status}" + (f" ({detail})" if detail else ""))

@@ -1,4 +1,5 @@
 import logging
+import mimetypes
 import shutil
 from pathlib import Path
 
@@ -13,18 +14,20 @@ class SAMAudioSeparator:
     def __init__(self, sam_audio_url: str):
         self.sam_audio_url = sam_audio_url
 
-    async def separate(self, audio_path: Path, output_dir: Path) -> SeparatedAudio:
-        logger.info(f"[Separation] Separating {audio_path} via SAM Audio at {self.sam_audio_url}")
+    async def separate(self, input_path: Path, output_dir: Path) -> SeparatedAudio:
+        logger.info(f"[Separation] Separating {input_path} via SAM Audio at {self.sam_audio_url}")
 
         speech_path = output_dir / "audio_speech.wav"
         background_path = output_dir / "audio_background.wav"
 
+        mime_type = mimetypes.guess_type(str(input_path))[0] or "application/octet-stream"
+
         try:
             async with httpx.AsyncClient(timeout=600) as client:
-                with open(audio_path, "rb") as f:
+                with open(input_path, "rb") as f:
                     response = await client.post(
                         f"{self.sam_audio_url}/separate",
-                        files={"file": (audio_path.name, f, "audio/wav")},
+                        files={"file": (input_path.name, f, mime_type)},
                     )
                 response.raise_for_status()
                 data = response.json()
@@ -47,13 +50,13 @@ class SAMAudioSeparator:
             return SeparatedAudio(speech_path=speech_path, background_path=background_path)
         except httpx.ConnectError:
             logger.warning("[Separation] SAM Audio service unavailable, copying original as speech")
-            return self._stub_separate(audio_path, speech_path, background_path)
+            return self._stub_separate(input_path, speech_path, background_path)
 
     def _stub_separate(
-        self, audio_path: Path, speech_path: Path, background_path: Path
+        self, input_path: Path, speech_path: Path, background_path: Path
     ) -> SeparatedAudio:
         """Fallback: copy original audio as speech, create silent background."""
-        shutil.copy2(audio_path, speech_path)
+        shutil.copy2(input_path, speech_path)
         # Create a minimal silent WAV as background placeholder
         self._create_silent_wav(background_path)
         return SeparatedAudio(speech_path=speech_path, background_path=background_path)

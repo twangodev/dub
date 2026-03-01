@@ -11,8 +11,8 @@ class STTProvider(Protocol):
 
 
 class AudioSeparator(Protocol):
-    async def separate(self, audio_path: Path, output_dir: Path) -> SeparatedAudio:
-        """Splits audio into speech + background tracks."""
+    async def separate(self, input_path: Path, output_dir: Path) -> SeparatedAudio:
+        """Splits input (video or audio) into speech + background tracks."""
         ...
 
 

@@ -10,7 +10,6 @@ class JobStatus(StrEnum):
 
 
 class StageType(StrEnum):
-    EXTRACT_AUDIO = "extract_audio"
     SEPARATE_AUDIO = "separate_audio"
     TRANSCRIBE = "transcribe"
     SEGMENT = "segment"

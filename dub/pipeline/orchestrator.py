@@ -2,7 +2,7 @@ import json
 import logging
 from pathlib import Path
 
-from dub.models.schemas import Segment, TranslatedSegment
+from dub.models.schemas import Segment, SeparatedAudio, TranslatedSegment
 from dub.pipeline.context import JobContext
 from dub.providers.audio.extractor import extract_audio
 from dub.providers.audio.speed import time_stretch
@@ -86,23 +86,15 @@ async def run_dubbing_pipeline(ctx: JobContext) -> Path:
     """Execute the full dubbing pipeline."""
     logger.info(f"[Pipeline] Starting dubbing pipeline for job {ctx.job_id}")
 
-    # 1. Extract audio from video
-    await ctx.emit_progress("extract_audio", "running")
-    await extract_audio(ctx.input_video, ctx.job_dir / "audio_original.wav")
-    await ctx.emit_progress("extract_audio", "complete")
-
-    # 2. Separate speech from background
+    # 1. Separate speech from background (SAM Audio accepts video directly)
     await ctx.emit_progress("separate_audio", "running")
     if ctx.separator is not None:
-        separated = await ctx.separator.separate(ctx.audio_original, ctx.job_dir)
+        separated = await ctx.separator.separate(ctx.input_video, ctx.job_dir)
     else:
-        # No separation — use original audio as speech, create silent background
-        import shutil
-        speech_path = ctx.job_dir / "audio_speech.wav"
-        shutil.copy2(ctx.audio_original, speech_path)
-        from dub.models.schemas import SeparatedAudio
+        # No separator — extract audio from video, use as speech
+        await extract_audio(ctx.input_video, ctx.job_dir / "audio_speech.wav")
         separated = SeparatedAudio(
-            speech_path=speech_path,
+            speech_path=ctx.job_dir / "audio_speech.wav",
             background_path=ctx.job_dir / "audio_background.wav",
         )
     await ctx.emit_progress("separate_audio", "complete")
