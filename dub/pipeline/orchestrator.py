@@ -73,7 +73,7 @@ def extract_voice_sample(speech_path: Path, max_bytes: int = 500_000) -> bytes |
 def save_json(path: Path, data: list) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w") as f:
-        json.dump([item.model_dump() for item in data], f, indent=2, default=str)
+        json.dump([item.model_dump() for item in data], f, indent=2, default=str, ensure_ascii=False)
 
 
 def save_audio(path: Path, audio_bytes: bytes) -> None:
