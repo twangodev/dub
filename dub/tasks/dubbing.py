@@ -70,6 +70,7 @@ async def run_dubbing_job(
         separator=create_separator(settings),
         translator=create_translator(settings),
         tts=create_tts(settings),
+        fish_audio_api_key=settings.fish_audio_api_key,
     )
 
     # Set up Redis for progress emission

@@ -14,6 +14,7 @@ class StageType(StrEnum):
     TRANSCRIBE = "transcribe"
     SEGMENT = "segment"
     TRANSLATE = "translate"
+    VOICE_CLONE = "voice_clone"
     TTS = "tts"
     SPEED_ADJUST = "speed_adjust"
     ASSEMBLE = "assemble"

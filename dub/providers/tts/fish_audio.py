@@ -1,4 +1,3 @@
-import asyncio
 import io
 import logging
 import struct
@@ -25,23 +24,20 @@ class FishAudioTTS(TTSProvider):
             return self._stub_audio(text)
 
         try:
-            from fish_audio_sdk import Session, TTSRequest, ReferenceAudio
+            from fishaudio import AsyncFishAudio
+            from fishaudio.types import ReferenceAudio
 
-            session = Session(self.api_key)
+            client = AsyncFishAudio(api_key=self.api_key)
 
-            request_kwargs = {"text": text}
+            kwargs: dict = {"text": text}
             if reference_id:
-                request_kwargs["reference_id"] = reference_id
+                kwargs["reference_id"] = reference_id
             elif voice_reference:
-                request_kwargs["references"] = [
+                kwargs["references"] = [
                     ReferenceAudio(audio=voice_reference, text="")
                 ]
 
-            result = b""
-            for chunk in session.tts(TTSRequest(**request_kwargs)):
-                result += chunk
-
-            return result
+            return await client.tts.convert(**kwargs)
         except Exception as e:
             logger.error(f"[TTS] Fish Audio error: {e}, returning stub audio")
             return self._stub_audio(text)

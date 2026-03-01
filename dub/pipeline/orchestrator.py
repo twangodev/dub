@@ -6,6 +6,11 @@ from dub.models.schemas import Segment, TranslatedSegment, Word
 from dub.pipeline.context import JobContext
 from dub.providers.audio.speed import time_stretch
 from dub.providers.audio.assembler import assemble_audio, mux_video
+from dub.providers.tts.voice_clone import (
+    create_voice_clone,
+    delete_voice_clone,
+    extract_best_voice_sample,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -110,8 +115,25 @@ async def run_dubbing_pipeline(ctx: JobContext) -> Path:
     save_json(ctx.job_dir / "translated.json", translated)
     await ctx.emit_progress("translate", "complete")
 
-    # 6. Extract voice reference for cloning
-    voice_ref = extract_voice_sample(separated.speech_path)
+    # 6. Voice cloning — create a persistent model from the best speech chunk
+    voice_model_id = None
+    voice_ref = None
+    await ctx.emit_progress("voice_clone", "running")
+    if ctx.fish_audio_api_key:
+        try:
+            voice_model_id = await create_voice_clone(
+                ctx.fish_audio_api_key, separated.speech_path, all_words, ctx.job_id,
+            )
+        except Exception:
+            logger.exception("[Pipeline] Voice clone creation failed, falling back")
+            voice_model_id = None
+
+    if voice_model_id is None:
+        # Fallback: use timestamp-guided chunk extraction (no model upload)
+        voice_ref = await extract_best_voice_sample(separated.speech_path, all_words)
+        if voice_ref is None:
+            voice_ref = extract_voice_sample(separated.speech_path)
+    await ctx.emit_progress("voice_clone", "complete")
 
     # 7. TTS per segment
     await ctx.emit_progress("tts", "running")
@@ -120,7 +142,9 @@ async def run_dubbing_pipeline(ctx: JobContext) -> Path:
 
     for i, seg in enumerate(translated):
         audio_bytes = await ctx.tts.synthesize(
-            seg.translated_text, voice_reference=voice_ref
+            seg.translated_text,
+            reference_id=voice_model_id,
+            voice_reference=voice_ref,
         )
         seg_path = tts_dir / f"{i:03d}.wav"
         save_audio(seg_path, audio_bytes)
@@ -145,6 +169,10 @@ async def run_dubbing_pipeline(ctx: JobContext) -> Path:
     output_path = ctx.job_dir / "output.mp4"
     await mux_video(ctx.input_video, dubbed_audio_path, output_path)
     await ctx.emit_progress("mux", "complete")
+
+    # 10. Clean up voice clone model
+    if voice_model_id:
+        await delete_voice_clone(ctx.fish_audio_api_key, voice_model_id)
 
     logger.info(f"[Pipeline] Dubbing pipeline complete for job {ctx.job_id}")
     return output_path
