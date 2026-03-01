@@ -5,8 +5,10 @@ from pathlib import Path
 from dub.models.schemas import Segment, TranslatedSegment, Word
 from dub.pipeline.context import JobContext
 from dub.providers.audio.assembler import assemble_audio, mux_video
+from dub.providers.evaluation.gemini_audio import GeminiAudioEvaluator
 from dub.providers.tts.voice_clone import (
     create_voice_clone,
+    create_voice_clone_from_samples,
     delete_voice_clone,
     extract_best_voice_sample,
 )
@@ -15,6 +17,11 @@ logger = logging.getLogger(__name__)
 
 # Pause threshold for segmenting words into utterances (seconds)
 PAUSE_THRESHOLD = 0.7
+
+# Fluency evaluation parameters
+EVAL_SCRIPT_TARGET_DURATION = 30.0  # seconds of text to generate
+MIN_FLUENCY_SCORE = 9.0             # early-stop threshold
+MAX_EVAL_ATTEMPTS = 10              # max TTS + eval retries
 
 
 def segment_into_utterances(segments: list[Segment]) -> list[Segment]:
@@ -114,8 +121,9 @@ async def run_dubbing_pipeline(ctx: JobContext) -> Path:
     save_json(ctx.job_dir / "translated.json", translated)
     await ctx.emit_progress("translate", "complete")
 
-    # 6. Voice cloning — create a persistent model from the best speech chunk
+    # 6. Voice cloning — create accent clone from the best speech chunk
     voice_model_id = None
+    fluent_model_id = None
     voice_ref = None
     await ctx.emit_progress("voice_clone", "running")
     if ctx.fish_audio_api_key:
@@ -134,7 +142,93 @@ async def run_dubbing_pipeline(ctx: JobContext) -> Path:
             voice_ref = extract_voice_sample(separated.speech_path)
     await ctx.emit_progress("voice_clone", "complete")
 
-    # 7. TTS per segment
+    # 6a. Generate evaluation script and evaluate with Gemini
+    if voice_model_id and ctx.gemini_api_key:
+        await ctx.emit_progress("fluency_eval", "running")
+        try:
+            # Build ~30s evaluation script from translated segments
+            eval_script_parts: list[str] = []
+            eval_duration = 0.0
+            for seg in translated:
+                seg_duration = seg.end - seg.start
+                eval_script_parts.append(seg.translated_text)
+                eval_duration += seg_duration
+                if eval_duration >= EVAL_SCRIPT_TARGET_DURATION:
+                    break
+            eval_script = " ".join(eval_script_parts)
+            logger.info(
+                f"[Pipeline] Evaluation script: ~{eval_duration:.1f}s, "
+                f"{len(eval_script)} chars"
+            )
+
+            evaluator = GeminiAudioEvaluator(ctx.gemini_api_key)
+            source_lang = ctx.source_lang or "unknown"
+
+            best_audio: bytes | None = None
+            best_score = -1.0
+
+            for attempt in range(1, MAX_EVAL_ATTEMPTS + 1):
+                # Synthesize using the accent (first) clone
+                eval_audio = await ctx.tts.synthesize(
+                    eval_script,
+                    reference_id=voice_model_id,
+                    voice_reference=None,
+                )
+
+                # Evaluate with Gemini
+                score = await evaluator.evaluate(
+                    eval_audio, eval_script, ctx.target_lang, source_lang,
+                )
+                logger.info(
+                    f"[Pipeline] Attempt {attempt}/{MAX_EVAL_ATTEMPTS}: "
+                    f"overall={score.overall:.1f} "
+                    f"(fluency={score.fluency:.1f}, naturalness={score.naturalness:.1f}, "
+                    f"accent={score.accent_score:.1f}, clarity={score.clarity:.1f}) "
+                    f"— {score.reasoning}"
+                )
+                await ctx.emit_progress(
+                    "fluency_eval", "progress",
+                    f"Attempt {attempt}/{MAX_EVAL_ATTEMPTS}: overall={score.overall:.1f}",
+                )
+
+                if score.overall > best_score:
+                    best_score = score.overall
+                    best_audio = eval_audio
+
+                if score.overall >= MIN_FLUENCY_SCORE:
+                    logger.info(
+                        f"[Pipeline] Early stop: score {score.overall:.1f} >= {MIN_FLUENCY_SCORE}"
+                    )
+                    break
+
+            logger.info(f"[Pipeline] Best fluency score: {best_score:.1f}")
+            await ctx.emit_progress("fluency_eval", "complete", f"best={best_score:.1f}")
+
+            # 6b. Create fluent clone from best sample
+            if best_audio is not None:
+                await ctx.emit_progress("fluent_clone", "running")
+                try:
+                    fluent_model_id = await create_voice_clone_from_samples(
+                        ctx.fish_audio_api_key,
+                        audio_samples=[best_audio],
+                        transcripts=[eval_script],
+                        job_id=ctx.job_id,
+                    )
+                    if fluent_model_id:
+                        logger.info(f"[Pipeline] Fluent clone created: {fluent_model_id}")
+                    else:
+                        logger.warning("[Pipeline] Fluent clone creation returned None")
+                except Exception:
+                    logger.exception("[Pipeline] Fluent clone creation failed, using accent clone")
+                    fluent_model_id = None
+                await ctx.emit_progress("fluent_clone", "complete")
+
+        except Exception:
+            logger.exception("[Pipeline] Fluency evaluation failed, using accent clone")
+            fluent_model_id = None
+
+    # 7. TTS per segment — prefer fluent clone, fall back to accent clone
+    tts_reference_id = fluent_model_id or voice_model_id
     await ctx.emit_progress("tts", "running")
     tts_dir = ctx.job_dir / "tts_segments"
     tts_dir.mkdir(parents=True, exist_ok=True)
@@ -142,7 +236,7 @@ async def run_dubbing_pipeline(ctx: JobContext) -> Path:
     for i, seg in enumerate(translated):
         audio_bytes = await ctx.tts.synthesize(
             seg.translated_text,
-            reference_id=voice_model_id,
+            reference_id=tts_reference_id,
             voice_reference=voice_ref,
         )
         seg_path = tts_dir / f"{i:03d}.wav"
@@ -163,7 +257,9 @@ async def run_dubbing_pipeline(ctx: JobContext) -> Path:
     await mux_video(ctx.input_video, dubbed_audio_path, output_path)
     await ctx.emit_progress("mux", "complete")
 
-    # 10. Clean up voice clone model
+    # 10. Clean up voice clone models (both accent and fluent)
+    if fluent_model_id:
+        await delete_voice_clone(ctx.fish_audio_api_key, fluent_model_id)
     if voice_model_id:
         await delete_voice_clone(ctx.fish_audio_api_key, voice_model_id)
 

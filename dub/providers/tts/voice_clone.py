@@ -189,6 +189,51 @@ async def create_voice_clone(
     return None
 
 
+async def create_voice_clone_from_samples(
+    api_key: str,
+    audio_samples: list[bytes],
+    transcripts: list[str],
+    job_id: str,
+) -> str | None:
+    """Create a voice model on Fish Audio from pre-generated audio samples.
+
+    Returns the model_id on success, None on any failure.
+    """
+    client = AsyncFishAudio(api_key=api_key)
+    try:
+        model = await client.voices.create(
+            title=f"dub-fluent-{job_id}",
+            voices=audio_samples,
+            texts=transcripts,
+        )
+        model_id = model.id
+        logger.info(f"[VoiceClone] Fluent model created: {model_id}, waiting for training...")
+    except Exception as e:
+        logger.error(f"[VoiceClone] Fluent model creation failed: {e}")
+        return None
+
+    # Poll until trained
+    elapsed = 0.0
+    while elapsed < POLL_TIMEOUT:
+        await asyncio.sleep(POLL_INTERVAL)
+        elapsed += POLL_INTERVAL
+        try:
+            voice = await client.voices.get(model_id)
+            if voice.state == "trained":
+                logger.info(f"[VoiceClone] Fluent model {model_id} trained successfully")
+                return model_id
+            if voice.state == "failed":
+                logger.error(f"[VoiceClone] Fluent model {model_id} training failed")
+                await delete_voice_clone(api_key, model_id)
+                return None
+        except Exception as e:
+            logger.warning(f"[VoiceClone] Poll error: {e}")
+
+    logger.error(f"[VoiceClone] Fluent model {model_id} training timed out after {POLL_TIMEOUT}s")
+    await delete_voice_clone(api_key, model_id)
+    return None
+
+
 async def delete_voice_clone(api_key: str, model_id: str) -> None:
     """Delete a voice model from Fish Audio. Best-effort, catches all exceptions."""
     try:

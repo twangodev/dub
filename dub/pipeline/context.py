@@ -22,6 +22,7 @@ class JobContext:
     tts: TTSProvider
     source_lang: str | None = None
     fish_audio_api_key: str = ""
+    gemini_api_key: str = ""
 
     # Redis connection for stream progress
     _redis: Redis | None = None
