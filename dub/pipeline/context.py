@@ -1,9 +1,11 @@
-import json
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
+from redis.asyncio import Redis
+
 from dub.models.schemas import ProgressEvent
+from dub.providers.protocols import AudioSeparator, STTProvider, TranslationProvider, TTSProvider
 
 logger = logging.getLogger(__name__)
 
@@ -14,16 +16,14 @@ class JobContext:
     job_dir: Path
     input_video: Path
     target_lang: str
+    stt: STTProvider
+    separator: AudioSeparator
+    translator: TranslationProvider
+    tts: TTSProvider
     source_lang: str | None = None
 
-    # Providers (set by orchestrator before pipeline starts)
-    stt: object = None
-    separator: object = None
-    translator: object = None
-    tts: object = None
-
-    # Redis connection for stream progress (set externally)
-    _redis: object = None
+    # Redis connection for stream progress
+    _redis: Redis | None = None
 
     async def emit_progress(self, stage: str, status: str, detail: str | None = None) -> None:
         event = ProgressEvent(stage=stage, status=status, detail=detail)
@@ -36,5 +36,5 @@ class JobContext:
             except Exception as e:
                 logger.error(f"[Job {self.job_id}] Failed to publish progress: {e}")
 
-    async def set_redis(self, redis) -> None:
+    async def set_redis(self, redis: Redis) -> None:
         self._redis = redis

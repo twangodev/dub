@@ -2,6 +2,7 @@ import asyncio
 import logging
 
 from dub.models.schemas import Segment, TranslatedSegment
+from dub.providers.protocols import TranslationProvider
 
 logger = logging.getLogger(__name__)
 
@@ -15,7 +16,7 @@ Return ONLY a JSON array of translated strings, one per input segment, \
 in the same order. No explanations."""
 
 
-class GeminiTranslation:
+class GeminiTranslation(TranslationProvider):
     def __init__(self, api_key: str):
         self.api_key = api_key
 

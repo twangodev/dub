@@ -2,9 +2,8 @@ import json
 import logging
 from pathlib import Path
 
-from dub.models.schemas import Segment, SeparatedAudio, TranslatedSegment
+from dub.models.schemas import Segment, TranslatedSegment
 from dub.pipeline.context import JobContext
-from dub.providers.audio.extractor import extract_audio
 from dub.providers.audio.speed import time_stretch
 from dub.providers.audio.assembler import assemble_audio, mux_video
 
@@ -88,15 +87,7 @@ async def run_dubbing_pipeline(ctx: JobContext) -> Path:
 
     # 1. Separate speech from background (SAM Audio accepts video directly)
     await ctx.emit_progress("separate_audio", "running")
-    if ctx.separator is not None:
-        separated = await ctx.separator.separate(ctx.input_video, ctx.job_dir)
-    else:
-        # No separator — extract audio from video, use as speech
-        await extract_audio(ctx.input_video, ctx.job_dir / "audio_speech.wav")
-        separated = SeparatedAudio(
-            speech_path=ctx.job_dir / "audio_speech.wav",
-            background_path=ctx.job_dir / "audio_background.wav",
-        )
+    separated = await ctx.separator.separate(ctx.input_video, ctx.job_dir)
     await ctx.emit_progress("separate_audio", "complete")
 
     # 3. ASR — word-level timestamps

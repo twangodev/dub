@@ -5,11 +5,12 @@ from pathlib import Path
 import httpx
 
 from dub.models.schemas import Segment, Word
+from dub.providers.protocols import STTProvider
 
 logger = logging.getLogger(__name__)
 
 
-class WhisperSTT:
+class WhisperSTT(STTProvider):
     def __init__(self, whisper_url: str):
         self.whisper_url = whisper_url
 

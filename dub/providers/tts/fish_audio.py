@@ -3,12 +3,12 @@ import io
 import logging
 import struct
 
-from dub.models.schemas import TranslatedSegment
+from dub.providers.protocols import TTSProvider
 
 logger = logging.getLogger(__name__)
 
 
-class FishAudioTTS:
+class FishAudioTTS(TTSProvider):
     def __init__(self, api_key: str):
         self.api_key = api_key
 

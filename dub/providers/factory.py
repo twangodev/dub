@@ -11,9 +11,7 @@ def create_stt(settings: Settings) -> WhisperSTT:
     raise ValueError(f"Unknown STT backend: {settings.stt_backend}")
 
 
-def create_separator(settings: Settings) -> SAMAudioSeparator | None:
-    if settings.separation_backend == "none":
-        return None
+def create_separator(settings: Settings) -> SAMAudioSeparator:
     if settings.separation_backend == "sam_audio":
         return SAMAudioSeparator(sam_audio_url=settings.sam_audio_url)
     raise ValueError(f"Unknown separation backend: {settings.separation_backend}")
