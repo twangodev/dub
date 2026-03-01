@@ -1,7 +1,7 @@
 from typing import Protocol
 from pathlib import Path
 
-from dub.models.schemas import Segment, TranslatedSegment, SeparatedAudio
+from dub.models.schemas import Segment, TranslatedSegment, SeparatedAudio, Word
 
 
 class STTProvider(Protocol):
@@ -19,11 +19,11 @@ class AudioSeparator(Protocol):
 class TranslationProvider(Protocol):
     async def translate_chunks(
         self,
-        segments: list[Segment],
+        words: list[Word],
         target_lang: str,
         source_lang: str | None = None,
     ) -> list[TranslatedSegment]:
-        """Translates segments in chunks with rolling context."""
+        """Translates words (with timestamps) in context windows with rolling context."""
         ...
 
 

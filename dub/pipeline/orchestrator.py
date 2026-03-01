@@ -2,7 +2,7 @@ import json
 import logging
 from pathlib import Path
 
-from dub.models.schemas import Segment, TranslatedSegment
+from dub.models.schemas import Segment, TranslatedSegment, Word
 from dub.pipeline.context import JobContext
 from dub.providers.audio.speed import time_stretch
 from dub.providers.audio.assembler import assemble_audio, mux_video
@@ -96,15 +96,16 @@ async def run_dubbing_pipeline(ctx: JobContext) -> Path:
     save_json(ctx.job_dir / "segments.json", segments)
     await ctx.emit_progress("transcribe", "complete")
 
-    # 4. Segment into utterances
-    await ctx.emit_progress("segment", "running")
-    utterances = segment_into_utterances(segments)
-    await ctx.emit_progress("segment", "complete")
-
-    # 5. Translation
+    # 4. Translation (sentence grouping is handled inside the translator)
     await ctx.emit_progress("translate", "running")
+    all_words: list[Word] = []
+    for seg in segments:
+        if seg.words:
+            all_words.extend(seg.words)
+        else:
+            all_words.append(Word(start=seg.start, end=seg.end, text=seg.text))
     translated = await ctx.translator.translate_chunks(
-        utterances, ctx.target_lang, ctx.source_lang
+        all_words, ctx.target_lang, ctx.source_lang
     )
     save_json(ctx.job_dir / "translated.json", translated)
     await ctx.emit_progress("translate", "complete")
