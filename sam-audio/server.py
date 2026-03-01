@@ -65,7 +65,7 @@ SPEAKER_PROMPT = (
 
 def _describe_speaker(file_bytes: bytes, mime_type: str) -> str:
     response = gemini.models.generate_content(
-        model="gemini-2.0-flash",
+        model="gemini-2.5-flash",
         contents=types.Content(
             parts=[
                 types.Part(inline_data=types.Blob(data=file_bytes, mime_type=mime_type)),
