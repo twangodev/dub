@@ -21,7 +21,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              count: 1
+              device_ids: ["0"]
               capabilities: [gpu]
 
   qwen-asr:
@@ -33,7 +33,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              count: 1
+              device_ids: ["1"]
               capabilities: [gpu]
 
   api:
