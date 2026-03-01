@@ -36,6 +36,14 @@ class SAMAudioSeparator:
                         track_resp.raise_for_status()
                         dest.write_bytes(track_resp.content)
 
+                # Clean up files on the SAM Audio server
+                if "speech_url" in data:
+                    job_url = data["speech_url"].rsplit("/", 1)[0]
+                    try:
+                        await client.delete(job_url)
+                    except Exception:
+                        logger.debug("[Separation] Failed to clean up remote job files")
+
             return SeparatedAudio(speech_path=speech_path, background_path=background_path)
         except httpx.ConnectError:
             logger.warning("[Separation] SAM Audio service unavailable, copying original as speech")
