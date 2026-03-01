@@ -4,6 +4,26 @@ services:
     ports:
       - "6379:6379"
 
+  sam-audio:
+    build:
+      context: ./sam-audio
+      dockerfile: Dockerfile
+    ports:
+      - "8002:8000"
+    env_file: .env
+    environment:
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      HF_TOKEN: ${HF_TOKEN}
+    volumes:
+      - huggingface-cache:/root/.cache
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
   api:
     build:
       context: .
@@ -13,11 +33,13 @@ services:
     env_file: .env
     environment:
       REDIS_URL: redis://redis:6379
+      SAM_AUDIO_URL: http://sam-audio:8000
       DATA_DIR: /app/data/jobs
     volumes:
       - job-data:/app/data
     depends_on:
       - redis
+      - sam-audio
 
   worker:
     build:
@@ -26,11 +48,14 @@ services:
     env_file: .env
     environment:
       REDIS_URL: redis://redis:6379
+      SAM_AUDIO_URL: http://sam-audio:8000
       DATA_DIR: /app/data/jobs
     volumes:
       - job-data:/app/data
     depends_on:
       - redis
+      - sam-audio
 
 volumes:
   job-data:
+  huggingface-cache:
