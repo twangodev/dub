@@ -28,6 +28,7 @@ MAX_EVAL_ATTEMPTS = 10              # max TTS + eval retries
 # Duration-fitting parameters
 DURATION_TOLERANCE = 0.10  # ±10%
 MAX_FIT_ATTEMPTS = 5       # binary search iterations
+SAMPLES_PER_STEP = 5       # regenerations per speed to get stable median
 SPEED_MIN = 0.85           # slowest allowed
 SPEED_MAX = 1.3            # fastest allowed
 
@@ -39,44 +40,67 @@ async def synthesize_to_fit(
     reference_id: str | None = None,
     voice_reference: bytes | None = None,
 ) -> bytes:
-    """Binary-search on TTS speed so the output fits within ±DURATION_TOLERANCE of target."""
+    """Binary-search on TTS speed so the output fits within ±DURATION_TOLERANCE of target.
+
+    At each speed, generates SAMPLES_PER_STEP samples and uses the median
+    duration to decide which direction to bisect. Keeps the single best
+    sample across all attempts.
+    """
     lo = SPEED_MIN
     hi = SPEED_MAX
     best_audio: bytes | None = None
     best_diff = float("inf")
 
-    for attempt in range(1, MAX_FIT_ATTEMPTS + 1):
-        speed = (lo + hi) / 2 if attempt > 1 else 1.0
+    for step in range(1, MAX_FIT_ATTEMPTS + 1):
+        speed = (lo + hi) / 2 if step > 1 else 1.0
 
-        audio = await tts.synthesize(
-            text, voice_reference=voice_reference,
-            reference_id=reference_id, speed=speed,
-        )
-        actual = get_audio_duration(audio)
-        diff = abs(actual - target_duration)
+        # Generate multiple samples at this speed, early-exit if one fits
+        samples: list[tuple[bytes, float]] = []
+        for _ in range(SAMPLES_PER_STEP):
+            audio = await tts.synthesize(
+                text, voice_reference=voice_reference,
+                reference_id=reference_id, speed=speed,
+            )
+            dur = get_audio_duration(audio)
+            samples.append((audio, dur))
 
-        if diff < best_diff:
-            best_diff = diff
-            best_audio = audio
+            ratio = dur / target_duration if target_duration > 0 else 1.0
+            if abs(ratio - 1.0) <= DURATION_TOLERANCE:
+                logger.info(
+                    f"[Fit] target={target_duration:.2f}s, step {step} "
+                    f"speed={speed:.2f} → {dur:.2f}s ✓ early accept"
+                )
+                return audio
 
-        ratio = actual / target_duration if target_duration > 0 else 1.0
+        # Sort by duration and pick median
+        samples.sort(key=lambda s: s[1])
+        median_idx = len(samples) // 2
+        median_duration = samples[median_idx][1]
+
+        # Track best sample across all steps (closest to target)
+        for audio, dur in samples:
+            diff = abs(dur - target_duration)
+            if diff < best_diff:
+                best_diff = diff
+                best_audio = audio
+
+        ratio = median_duration / target_duration if target_duration > 0 else 1.0
         logger.info(
-            f"[Fit] target={target_duration:.2f}s, attempt {attempt} "
-            f"speed={speed:.2f} → {actual:.2f}s (ratio={ratio:.2f})"
+            f"[Fit] target={target_duration:.2f}s, step {step} "
+            f"speed={speed:.2f} → median {median_duration:.2f}s "
+            f"(ratio={ratio:.2f}, range={samples[0][1]:.2f}-{samples[-1][1]:.2f}s)"
         )
 
         if abs(ratio - 1.0) <= DURATION_TOLERANCE:
-            return audio  # within tolerance
+            return best_audio  # type: ignore[return-value]
 
-        if actual > target_duration:
-            # too long → need faster speed
+        if median_duration > target_duration:
             lo = speed
         else:
-            # too short → need slower speed
             hi = speed
 
     logger.warning(
-        f"[Fit] Exhausted {MAX_FIT_ATTEMPTS} attempts, "
+        f"[Fit] Exhausted {MAX_FIT_ATTEMPTS} steps × {SAMPLES_PER_STEP} samples, "
         f"best diff={best_diff:.2f}s for target={target_duration:.2f}s"
     )
     return best_audio  # type: ignore[return-value]
