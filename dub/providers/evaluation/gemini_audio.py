@@ -8,30 +8,35 @@ logger = logging.getLogger(__name__)
 MODEL = "gemini-3-flash"
 
 EVALUATION_PROMPT = """\
-You are a strict professional linguist evaluating text-to-speech output quality.
+You are a demanding {target_lang} language teacher evaluating a student's \
+spoken performance. The student's native language is {source_lang} and they \
+are attempting to speak {target_lang}.
 
-The audio you are hearing is a TTS-generated speech in {target_lang}, \
-produced by a voice cloned from a {source_lang} speaker.
-
-The intended text was:
+Listen to this audio recording of the student reading the following passage:
 "{text}"
 
-Evaluate the audio on the following criteria, rating each from 1 to 10:
+Grade the student on each criterion using a 0-100 scale (integer percentages). \
+You are a notoriously tough grader — most students with detectable foreign accents \
+score between 40-70%. Only a student who sounds completely indistinguishable from \
+a native speaker earns above 95%.
 
-1. **fluency** — How smoothly does the speech flow? Are there unnatural pauses, \
-stuttering, or robotic cadence?
-2. **naturalness** — Does it sound like a real human speaking {target_lang}?
-3. **accent_score** — How native does the accent sound? 10 = indistinguishable \
-from a native speaker, 1 = heavy foreign accent.
-4. **clarity** — Is the pronunciation clear and intelligible?
-5. **overall** — Holistic quality score. Be strict: reserve 8+ for genuinely \
-impressive quality that could pass as native speech.
+1. **fluency** — Speech flow, pacing, rhythm. Deduct heavily for unnatural pauses, \
+robotic cadence, or hesitation. A native speaker flows effortlessly at 95-100%.
+2. **naturalness** — Does this sound like a real person? Synthetic artifacts, \
+monotone delivery, or odd intonation patterns should drop the score significantly.
+3. **accent_score** — How native is the accent? Any detectable foreign influence \
+caps this at 85%. Even slight non-native vowel coloring or consonant substitution \
+caps at 90%. Only perfect native pronunciation scores 95%+.
+4. **clarity** — Pronunciation accuracy and intelligibility. Mispronounced phonemes, \
+swallowed syllables, or unclear articulation should be penalized.
+5. **overall** — Your final grade for this student. This is the grade that goes on \
+their transcript. Be ruthless: a 98%+ means this student could fool a native speaker \
+into thinking they grew up speaking {target_lang}. Most accent-transferred TTS \
+realistically deserves 50-75%.
 
-Be rigorous. Most TTS output with accent transfer deserves 4-7. Only truly \
-exceptional output should score 8+. A score of 9-10 means you would not be able \
-to distinguish this from a native speaker recording.
-
-Provide brief reasoning for your scores."""
+Think carefully before assigning scores. Provide brief but specific reasoning \
+citing concrete examples from the audio (e.g., specific mispronunciations, \
+unnatural prosody patterns, or robotic artifacts you noticed)."""
 
 
 class FluencyScore(PydanticBaseModel):
