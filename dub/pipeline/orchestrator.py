@@ -5,6 +5,8 @@ from pathlib import Path
 from dub.models.schemas import Segment, TranslatedSegment, Word
 from dub.pipeline.context import JobContext
 from dub.providers.audio.assembler import assemble_audio, mux_video
+from dub.providers.audio.duration import get_wav_duration
+from dub.providers.protocols import TTSProvider
 from dub.providers.evaluation.gemini_audio import GeminiAudioEvaluator
 from dub.providers.tts.voice_clone import (
     create_voice_clone,
@@ -22,6 +24,62 @@ PAUSE_THRESHOLD = 0.7
 EVAL_SCRIPT_TARGET_DURATION = 30.0  # seconds of text to generate
 MIN_FLUENCY_SCORE = 98.0            # early-stop threshold (0-100 scale)
 MAX_EVAL_ATTEMPTS = 10              # max TTS + eval retries
+
+# Duration-fitting parameters
+DURATION_TOLERANCE = 0.10  # ±10%
+MAX_FIT_ATTEMPTS = 5       # binary search iterations
+SPEED_MIN = 0.5            # slowest allowed
+SPEED_MAX = 3.0            # fastest allowed
+
+
+async def synthesize_to_fit(
+    tts: TTSProvider,
+    text: str,
+    target_duration: float,
+    reference_id: str | None = None,
+    voice_reference: bytes | None = None,
+) -> bytes:
+    """Binary-search on TTS speed so the output fits within ±DURATION_TOLERANCE of target."""
+    lo = SPEED_MIN
+    hi = SPEED_MAX
+    best_audio: bytes | None = None
+    best_diff = float("inf")
+
+    for attempt in range(1, MAX_FIT_ATTEMPTS + 1):
+        speed = (lo + hi) / 2 if attempt > 1 else 1.0
+
+        audio = await tts.synthesize(
+            text, voice_reference=voice_reference,
+            reference_id=reference_id, speed=speed,
+        )
+        actual = get_wav_duration(audio)
+        diff = abs(actual - target_duration)
+
+        if diff < best_diff:
+            best_diff = diff
+            best_audio = audio
+
+        ratio = actual / target_duration if target_duration > 0 else 1.0
+        logger.info(
+            f"[Fit] target={target_duration:.2f}s, attempt {attempt} "
+            f"speed={speed:.2f} → {actual:.2f}s (ratio={ratio:.2f})"
+        )
+
+        if abs(ratio - 1.0) <= DURATION_TOLERANCE:
+            return audio  # within tolerance
+
+        if actual > target_duration:
+            # too long → need faster speed
+            lo = speed
+        else:
+            # too short → need slower speed
+            hi = speed
+
+    logger.warning(
+        f"[Fit] Exhausted {MAX_FIT_ATTEMPTS} attempts, "
+        f"best diff={best_diff:.2f}s for target={target_duration:.2f}s"
+    )
+    return best_audio  # type: ignore[return-value]
 
 
 def segment_into_utterances(segments: list[Segment]) -> list[Segment]:
@@ -169,10 +227,9 @@ async def run_dubbing_pipeline(ctx: JobContext) -> Path:
 
             for attempt in range(1, MAX_EVAL_ATTEMPTS + 1):
                 # Synthesize using the accent (first) clone
-                eval_audio = await ctx.tts.synthesize(
-                    eval_script,
+                eval_audio = await synthesize_to_fit(
+                    ctx.tts, eval_script, EVAL_SCRIPT_TARGET_DURATION,
                     reference_id=voice_model_id,
-                    voice_reference=None,
                 )
 
                 # Evaluate with Gemini
@@ -234,8 +291,9 @@ async def run_dubbing_pipeline(ctx: JobContext) -> Path:
     tts_dir.mkdir(parents=True, exist_ok=True)
 
     for i, seg in enumerate(translated):
-        audio_bytes = await ctx.tts.synthesize(
-            seg.translated_text,
+        target_duration = seg.end - seg.start
+        audio_bytes = await synthesize_to_fit(
+            ctx.tts, seg.translated_text, target_duration,
             reference_id=tts_reference_id,
             voice_reference=voice_ref,
         )

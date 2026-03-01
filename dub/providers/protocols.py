@@ -33,6 +33,7 @@ class TTSProvider(Protocol):
         text: str,
         voice_reference: bytes | None = None,
         reference_id: str | None = None,
+        speed: float | None = None,
     ) -> bytes:
         """Generates speech audio from text. Returns WAV bytes."""
         ...

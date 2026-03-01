@@ -16,12 +16,13 @@ class FishAudioTTS(TTSProvider):
         text: str,
         voice_reference: bytes | None = None,
         reference_id: str | None = None,
+        speed: float | None = None,
     ) -> bytes:
         logger.info(f"[TTS] Synthesizing: {text[:50]}...")
 
         if not self.api_key:
             logger.warning("[TTS] No Fish Audio API key, returning stub audio")
-            return self._stub_audio(text)
+            return self._stub_audio(text, speed=speed)
 
         try:
             from fishaudio import AsyncFishAudio
@@ -30,6 +31,8 @@ class FishAudioTTS(TTSProvider):
             client = AsyncFishAudio(api_key=self.api_key)
 
             kwargs: dict = {"text": text}
+            if speed is not None:
+                kwargs["speed"] = speed
             if reference_id:
                 kwargs["reference_id"] = reference_id
             elif voice_reference:
@@ -42,10 +45,12 @@ class FishAudioTTS(TTSProvider):
             logger.error(f"[TTS] Fish Audio error: {e}, returning stub audio")
             return self._stub_audio(text)
 
-    def _stub_audio(self, text: str) -> bytes:
+    def _stub_audio(self, text: str, speed: float | None = None) -> bytes:
         """Generate a short silent WAV as placeholder."""
         sample_rate = 44100
         duration_sec = max(0.5, len(text) * 0.06)  # ~60ms per character
+        if speed is not None and speed > 0:
+            duration_sec /= speed
         num_samples = int(sample_rate * duration_sec)
         data_size = num_samples * 2  # 16-bit mono
 
