@@ -37,7 +37,7 @@ class FishAudioTTS(TTSProvider):
                     ReferenceAudio(audio=voice_reference, text="")
                 ]
 
-            return await client.tts.convert(**kwargs)
+            return await client.tts.convert(**kwargs, model="s2-pro")
         except Exception as e:
             logger.error(f"[TTS] Fish Audio error: {e}, returning stub audio")
             return self._stub_audio(text)
