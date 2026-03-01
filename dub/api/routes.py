@@ -1,10 +1,9 @@
-import asyncio
 import json
 import logging
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, HTTPException, Request, UploadFile, File, Form
 from fastapi.responses import FileResponse
 from redis.asyncio import Redis
 from sse_starlette.sse import EventSourceResponse
@@ -92,8 +91,11 @@ async def get_job(job_id: str):
 
 
 @router.get("/jobs/{job_id}/events")
-async def job_events(job_id: str):
-    """SSE stream of progress events for a job."""
+async def job_events(job_id: str, request: Request):
+    """SSE stream of progress events with replay support.
+
+    Clients reconnecting with Last-Event-ID will receive only missed events.
+    """
     redis = _get_redis()
 
     # Verify job exists
@@ -103,37 +105,74 @@ async def job_events(job_id: str):
         raise HTTPException(status_code=404, detail="Job not found")
     await redis.aclose()
 
+    last_event_id = request.headers.get("Last-Event-ID")
+
     async def event_generator():
-        sub_redis = _get_redis()
-        pubsub = sub_redis.pubsub()
+        stream_key = f"job:{job_id}:progress"
+        r = _get_redis()
         try:
-            await pubsub.subscribe(f"job:{job_id}:progress")
+            # Phase 1: Replay — send all events after last_event_id (or from start)
+            replay_start = last_event_id if last_event_id else "0-0"
+            # XRANGE is inclusive, use "(" prefix to make it exclusive when replaying
+            range_start = f"({replay_start}" if last_event_id else "0-0"
+            entries = await r.xrange(stream_key, min=range_start)
+
+            terminal_seen = False
+            for entry_id, fields in entries:
+                eid = entry_id if isinstance(entry_id, str) else entry_id.decode()
+                raw = fields.get("data") or fields.get(b"data", b"")
+                data = raw if isinstance(raw, str) else raw.decode()
+                yield {"event": "progress", "data": data, "id": eid}
+
+                event = json.loads(data)
+                if event.get("stage") == "pipeline" and event.get("status") in (
+                    "completed",
+                    "failed",
+                ):
+                    yield {"event": "done", "data": data, "id": eid}
+                    terminal_seen = True
+                    break
+
+            if terminal_seen:
+                return
+
+            # Phase 2: Live-tail with XREAD BLOCK
+            # Start reading after the last replayed entry, or from the beginning
+            last_id = entries[-1][0] if entries else (last_event_id or "0-0")
+            if isinstance(last_id, bytes):
+                last_id = last_id.decode()
 
             while True:
-                message = await pubsub.get_message(
-                    ignore_subscribe_messages=True, timeout=1.0
-                )
-                if message and message["type"] == "message":
-                    data = message["data"]
-                    if isinstance(data, bytes):
-                        data = data.decode()
-                    yield {"event": "progress", "data": data}
+                if await request.is_disconnected():
+                    break
 
-                    # Check if pipeline is done
-                    event = json.loads(data)
-                    if event.get("stage") == "pipeline" and event.get("status") in (
-                        "completed",
-                        "failed",
-                    ):
-                        yield {"event": "done", "data": data}
-                        break
-                else:
-                    # Send keepalive
+                result = await r.xread(
+                    {stream_key: last_id}, block=5000, count=10
+                )
+
+                if not result:
+                    # Timeout — send keepalive
                     yield {"event": "ping", "data": ""}
+                    continue
+
+                for _stream_name, messages in result:
+                    for entry_id, fields in messages:
+                        eid = entry_id if isinstance(entry_id, str) else entry_id.decode()
+                        raw = fields.get("data") or fields.get(b"data", b"")
+                        data = raw if isinstance(raw, str) else raw.decode()
+                        yield {"event": "progress", "data": data, "id": eid}
+
+                        event = json.loads(data)
+                        if event.get("stage") == "pipeline" and event.get("status") in (
+                            "completed",
+                            "failed",
+                        ):
+                            yield {"event": "done", "data": data, "id": eid}
+                            return
+
+                        last_id = eid
         finally:
-            await pubsub.unsubscribe(f"job:{job_id}:progress")
-            await pubsub.aclose()
-            await sub_redis.aclose()
+            await r.aclose()
 
     return EventSourceResponse(event_generator())
 
@@ -157,6 +196,7 @@ async def delete_job(job_id: str):
     redis = _get_redis()
     try:
         await redis.delete(f"job:{job_id}")
+        await redis.delete(f"job:{job_id}:progress")
         await redis.srem("jobs", job_id)
     finally:
         await redis.aclose()

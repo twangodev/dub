@@ -22,7 +22,7 @@ class JobContext:
     translator: object = None
     tts: object = None
 
-    # Redis connection for pub/sub progress (set externally)
+    # Redis connection for stream progress (set externally)
     _redis: object = None
 
     @property
@@ -35,8 +35,8 @@ class JobContext:
 
         if self._redis is not None:
             try:
-                channel = f"job:{self.job_id}:progress"
-                await self._redis.publish(channel, event.model_dump_json())
+                stream_key = f"job:{self.job_id}:progress"
+                await self._redis.xadd(stream_key, {"data": event.model_dump_json()})
             except Exception as e:
                 logger.error(f"[Job {self.job_id}] Failed to publish progress: {e}")
 

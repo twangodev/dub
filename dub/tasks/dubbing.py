@@ -33,13 +33,20 @@ async def update_job_status(
 
         await redis.set(f"job:{job_id}", json.dumps(job))
 
-        # Publish completion/failure event
+        # Append completion/failure event to stream
         event = {"stage": "pipeline", "status": status}
         if error:
             event["detail"] = error
         if output_path:
             event["output_url"] = f"/api/jobs/{job_id}/output"
-        await redis.publish(f"job:{job_id}:progress", json.dumps(event))
+        stream_key = f"job:{job_id}:progress"
+        await redis.xadd(stream_key, {"data": json.dumps(event)})
+
+        # Set TTL on terminal states
+        if status in ("completed", "failed"):
+            ttl = settings.job_ttl_seconds
+            await redis.expire(f"job:{job_id}", ttl)
+            await redis.expire(stream_key, ttl)
     finally:
         await redis.aclose()
 

@@ -18,6 +18,9 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379"
     data_dir: str = "./data/jobs"
 
+    # Job lifecycle
+    job_ttl_seconds: int = 86400  # 24h
+
     # API keys
     fish_audio_api_key: str = ""
     gemini_api_key: str = ""
