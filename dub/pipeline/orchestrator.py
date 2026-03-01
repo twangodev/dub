@@ -5,7 +5,7 @@ from pathlib import Path
 from dub.models.schemas import Segment, TranslatedSegment, Word
 from dub.pipeline.context import JobContext
 from dub.providers.audio.assembler import assemble_audio, mux_video
-from dub.providers.audio.duration import get_wav_duration
+from dub.providers.audio.duration import get_audio_duration
 from dub.providers.protocols import TTSProvider
 from dub.providers.evaluation.gemini_audio import GeminiAudioEvaluator
 from dub.providers.tts.voice_clone import (
@@ -52,7 +52,7 @@ async def synthesize_to_fit(
             text, voice_reference=voice_reference,
             reference_id=reference_id, speed=speed,
         )
-        actual = get_wav_duration(audio)
+        actual = get_audio_duration(audio)
         diff = abs(actual - target_duration)
 
         if diff < best_diff:

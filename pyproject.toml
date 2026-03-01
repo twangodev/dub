@@ -9,6 +9,7 @@ dependencies = [
     "fish-audio-sdk>=1.2.0",
     "google-genai>=1.65.0",
     "httpx>=0.28.1",
+    "mutagen>=1.47.0",
     "pydantic-settings>=2.13.1",
     "python-multipart>=0.0.22",
     "redis>=7.2.1",
