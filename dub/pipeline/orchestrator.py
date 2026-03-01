@@ -4,7 +4,6 @@ from pathlib import Path
 
 from dub.models.schemas import Segment, TranslatedSegment, Word
 from dub.pipeline.context import JobContext
-from dub.providers.audio.speed import time_stretch
 from dub.providers.audio.assembler import assemble_audio, mux_video
 from dub.providers.tts.voice_clone import (
     create_voice_clone,
@@ -148,12 +147,6 @@ async def run_dubbing_pipeline(ctx: JobContext) -> Path:
         )
         seg_path = tts_dir / f"{i:03d}.wav"
         save_audio(seg_path, audio_bytes)
-
-        # Speed-adjust to fit original time slot
-        target_duration = seg.end - seg.start
-        if target_duration > 0:
-            await time_stretch(seg_path, target_duration)
-
         await ctx.emit_progress("tts", "progress", f"{i + 1}/{len(translated)}")
 
     await ctx.emit_progress("tts", "complete")
