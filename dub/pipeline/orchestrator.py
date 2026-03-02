@@ -21,23 +21,6 @@ logger = logging.getLogger(__name__)
 # Pause threshold for segmenting words into utterances (seconds)
 PAUSE_THRESHOLD = 0.7
 
-# Fluency evaluation parameters
-EVAL_SCRIPT_TARGET_DURATION = 30.0  # seconds of text to generate
-MIN_FLUENCY_SCORE = 98.0            # early-stop threshold (0-100 scale)
-
-# Iterative refinement parameters
-MAX_GENERATIONS = 4
-SAMPLES_PER_GENERATION = 10   # large pool for better selection
-TOP_K_SAMPLES = 5             # top 50% for rich training data
-PLATEAU_THRESHOLD = 2.0       # stop if absolute score improves < 2 points
-
-# Duration-fitting parameters
-DURATION_TOLERANCE = 0.10  # ±10%
-MAX_FIT_ATTEMPTS = 5       # binary search iterations
-SAMPLES_PER_STEP = 5       # regenerations per speed to get stable median
-SPEED_MIN = 0.85           # slowest allowed
-SPEED_MAX = 1.3            # fastest allowed
-
 
 async def synthesize_to_fit(
     tts: TTSProvider,
@@ -45,24 +28,30 @@ async def synthesize_to_fit(
     target_duration: float,
     reference_id: str | None = None,
     voice_reference: bytes | None = None,
+    *,
+    duration_tolerance: float = 0.10,
+    max_fit_attempts: int = 5,
+    samples_per_step: int = 5,
+    speed_min: float = 0.85,
+    speed_max: float = 1.3,
 ) -> bytes:
-    """Binary-search on TTS speed so the output fits within ±DURATION_TOLERANCE of target.
+    """Binary-search on TTS speed so the output fits within ±duration_tolerance of target.
 
-    At each speed, generates SAMPLES_PER_STEP samples and uses the median
+    At each speed, generates samples_per_step samples and uses the median
     duration to decide which direction to bisect. Keeps the single best
     sample across all attempts.
     """
-    lo = SPEED_MIN
-    hi = SPEED_MAX
+    lo = speed_min
+    hi = speed_max
     best_audio: bytes | None = None
     best_diff = float("inf")
 
-    for step in range(1, MAX_FIT_ATTEMPTS + 1):
+    for step in range(1, max_fit_attempts + 1):
         speed = (lo + hi) / 2 if step > 1 else 1.0
 
         # Generate multiple samples at this speed, early-exit if one fits
         samples: list[tuple[bytes, float]] = []
-        for _ in range(SAMPLES_PER_STEP):
+        for _ in range(samples_per_step):
             audio = await tts.synthesize(
                 text, voice_reference=voice_reference,
                 reference_id=reference_id, speed=speed,
@@ -71,7 +60,7 @@ async def synthesize_to_fit(
             samples.append((audio, dur))
 
             ratio = dur / target_duration if target_duration > 0 else 1.0
-            if abs(ratio - 1.0) <= DURATION_TOLERANCE:
+            if abs(ratio - 1.0) <= duration_tolerance:
                 logger.info(
                     f"[Fit] target={target_duration:.2f}s, step {step} "
                     f"speed={speed:.2f} → {dur:.2f}s ✓ early accept"
@@ -97,7 +86,7 @@ async def synthesize_to_fit(
             f"(ratio={ratio:.2f}, range={samples[0][1]:.2f}-{samples[-1][1]:.2f}s)"
         )
 
-        if abs(ratio - 1.0) <= DURATION_TOLERANCE:
+        if abs(ratio - 1.0) <= duration_tolerance:
             return best_audio  # type: ignore[return-value]
 
         if median_duration > target_duration:
@@ -106,7 +95,7 @@ async def synthesize_to_fit(
             hi = speed
 
     logger.warning(
-        f"[Fit] Exhausted {MAX_FIT_ATTEMPTS} steps × {SAMPLES_PER_STEP} samples, "
+        f"[Fit] Exhausted {max_fit_attempts} steps × {samples_per_step} samples, "
         f"best diff={best_diff:.2f}s for target={target_duration:.2f}s"
     )
     return best_audio  # type: ignore[return-value]
@@ -259,19 +248,24 @@ async def run_iterative_refinement(
     intermediate_models: list[str] = []
     current_model_id = initial_model_id
 
-    for gen in range(MAX_GENERATIONS):
+    for gen in range(ctx.max_generations):
         logger.info(f"[Refinement] === Generation {gen} ===")
         await ctx.emit_progress(
             "fluency_eval", "progress",
-            f"Generation {gen}/{MAX_GENERATIONS}",
+            f"Generation {gen}/{ctx.max_generations}",
         )
 
-        # Generate SAMPLES_PER_GENERATION samples
+        # Generate samples_per_generation samples
         samples: list[tuple[bytes, str]] = []
-        for s in range(SAMPLES_PER_GENERATION):
+        for s in range(ctx.samples_per_generation):
             audio = await synthesize_to_fit(
                 ctx.tts, eval_script, eval_duration,
                 reference_id=current_model_id,
+                duration_tolerance=ctx.duration_tolerance,
+                max_fit_attempts=ctx.max_fit_attempts,
+                samples_per_step=ctx.samples_per_step,
+                speed_min=ctx.speed_min,
+                speed_max=ctx.speed_max,
             )
             samples.append((audio, eval_script))
 
@@ -300,7 +294,7 @@ async def run_iterative_refinement(
             best_score=score.overall,
             champion_audio=champion_audio,
             champion_transcript=champion_transcript,
-            ranked_samples=ranked[:TOP_K_SAMPLES],
+            ranked_samples=ranked[:ctx.top_k_samples],
         )
         generation_results.append(gen_result)
 
@@ -311,17 +305,17 @@ async def run_iterative_refinement(
         logger.info(f"[Refinement] Progress: {scores_str}")
 
         # Check stopping conditions
-        if score.overall >= MIN_FLUENCY_SCORE:
+        if score.overall >= ctx.min_fluency_score:
             logger.info(
-                f"[Refinement] Early stop: score {score.overall:.1f} >= {MIN_FLUENCY_SCORE}"
+                f"[Refinement] Early stop: score {score.overall:.1f} >= {ctx.min_fluency_score}"
             )
             break
 
         if gen > 0:
             improvement = score.overall - generation_results[gen - 1].best_score
-            if improvement < PLATEAU_THRESHOLD:
+            if improvement < ctx.plateau_threshold:
                 logger.info(
-                    f"[Refinement] Plateau: improvement {improvement:.1f} < {PLATEAU_THRESHOLD} (plateau)"
+                    f"[Refinement] Plateau: improvement {improvement:.1f} < {ctx.plateau_threshold} (plateau)"
                 )
                 break
 
@@ -336,7 +330,7 @@ async def run_iterative_refinement(
             training_transcripts.append(prior.champion_transcript)
 
         # Current gen top-K
-        for audio, transcript in ranked[:TOP_K_SAMPLES]:
+        for audio, transcript in ranked[:ctx.top_k_samples]:
             training_audio.append(audio)
             training_transcripts.append(transcript)
 
@@ -422,12 +416,19 @@ async def run_dubbing_pipeline(ctx: JobContext) -> Path:
     save_json(ctx.job_dir / "translated.json", translated)
     await ctx.emit_progress("translate", "complete")
 
-    # 6. Voice cloning — create accent clone from the best speech chunk
+    # 6. Voice cloning — use user-provided reference or create accent clone
     voice_model_id = None
     fluent_model_id = None
     voice_ref = None
+    user_provided_voice = False
     await ctx.emit_progress("voice_clone", "running")
-    if ctx.fish_audio_api_key:
+
+    if ctx.voice_reference_id:
+        # User supplied a pre-existing Fish Audio voice model — skip clone creation
+        voice_model_id = ctx.voice_reference_id
+        user_provided_voice = True
+        logger.info(f"[Pipeline] Using user-provided voice model: {voice_model_id}")
+    elif ctx.fish_audio_api_key:
         try:
             voice_model_id = await create_voice_clone(
                 ctx.fish_audio_api_key, separated.speech_path, all_words, ctx.job_id,
@@ -455,7 +456,7 @@ async def run_dubbing_pipeline(ctx: JobContext) -> Path:
                 seg_duration = seg.end - seg.start
                 eval_script_parts.append(seg.translated_text)
                 eval_duration += seg_duration
-                if eval_duration >= EVAL_SCRIPT_TARGET_DURATION:
+                if eval_duration >= ctx.eval_script_target_duration:
                     break
             eval_script = " ".join(eval_script_parts)
             logger.info(
@@ -488,6 +489,11 @@ async def run_dubbing_pipeline(ctx: JobContext) -> Path:
             ctx.tts, seg.translated_text, target_duration,
             reference_id=tts_reference_id,
             voice_reference=voice_ref,
+            duration_tolerance=ctx.duration_tolerance,
+            max_fit_attempts=ctx.max_fit_attempts,
+            samples_per_step=ctx.samples_per_step,
+            speed_min=ctx.speed_min,
+            speed_max=ctx.speed_max,
         )
         seg_path = tts_dir / f"{i:03d}.wav"
         save_audio(seg_path, audio_bytes)
@@ -508,11 +514,12 @@ async def run_dubbing_pipeline(ctx: JobContext) -> Path:
     await ctx.emit_progress("mux", "complete")
 
     # 10. Clean up voice clone models (accent, intermediate, and fluent)
+    #     Skip deleting the voice model if user provided it — it's theirs, not ours.
     for mid in intermediate_models:
         await delete_voice_clone(ctx.fish_audio_api_key, mid)
     if fluent_model_id:
         await delete_voice_clone(ctx.fish_audio_api_key, fluent_model_id)
-    if voice_model_id:
+    if voice_model_id and not user_provided_voice:
         await delete_voice_clone(ctx.fish_audio_api_key, voice_model_id)
 
     logger.info(f"[Pipeline] Dubbing pipeline complete for job {ctx.job_id}")

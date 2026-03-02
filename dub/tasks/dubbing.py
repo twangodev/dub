@@ -53,7 +53,11 @@ async def update_job_status(
 
 @broker.task
 async def run_dubbing_job(
-    job_id: str, input_path: str, target_lang: str, source_lang: str | None = None
+    job_id: str,
+    input_path: str,
+    target_lang: str,
+    source_lang: str | None = None,
+    voice_reference_id: str | None = None,
 ) -> str:
     logger.info(f"[Task] Starting dubbing job {job_id}")
 
@@ -72,6 +76,18 @@ async def run_dubbing_job(
         tts=create_tts(settings),
         fish_audio_api_key=settings.fish_audio_api_key,
         gemini_api_key=settings.gemini_api_key,
+        voice_reference_id=voice_reference_id,
+        max_generations=settings.max_generations,
+        samples_per_generation=settings.samples_per_generation,
+        top_k_samples=settings.top_k_samples,
+        plateau_threshold=settings.plateau_threshold,
+        min_fluency_score=settings.min_fluency_score,
+        eval_script_target_duration=settings.eval_script_target_duration,
+        duration_tolerance=settings.duration_tolerance,
+        max_fit_attempts=settings.max_fit_attempts,
+        samples_per_step=settings.samples_per_step,
+        speed_min=settings.speed_min,
+        speed_max=settings.speed_max,
     )
 
     # Set up Redis for progress emission

@@ -24,6 +24,7 @@ async def create_job(
     file: UploadFile = File(...),
     target_lang: str = Form(...),
     source_lang: str | None = Form(None),
+    voice_reference_id: str | None = Form(None),
 ):
     """Upload a video and start a dubbing job."""
     job_id = uuid.uuid4().hex[:12]
@@ -45,6 +46,7 @@ async def create_job(
         "detail": None,
         "error": None,
         "output_path": None,
+        "voice_reference_id": voice_reference_id,
     }
     redis = _get_redis()
     try:
@@ -54,7 +56,7 @@ async def create_job(
         await redis.aclose()
 
     # Dispatch task
-    await run_dubbing_job.kiq(job_id, str(input_path), target_lang, source_lang)
+    await run_dubbing_job.kiq(job_id, str(input_path), target_lang, source_lang, voice_reference_id)
 
     logger.info(f"[API] Created job {job_id} -> {target_lang}")
     return {"job_id": job_id}
