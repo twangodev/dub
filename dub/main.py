@@ -56,6 +56,6 @@ async def lifespan(app: FastAPI):
         pass
 
 
-app = FastAPI(title="Dub - AI Video Dubbing", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="dub", version="0.1.0", lifespan=lifespan)
 
 app.include_router(router)
