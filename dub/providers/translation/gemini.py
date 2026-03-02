@@ -14,6 +14,7 @@ MODEL = "gemini-2.5-flash"
 MAX_WINDOW_CHARS = 2_000_000
 CONTEXT_SEGMENTS = 10
 PAUSE_THRESHOLD = 0.7  # seconds
+MAX_SEGMENT_DURATION = 15.0  # seconds — cap to avoid huge TTS targets
 
 
 class TranslatedBlock(PydanticBaseModel):
@@ -51,8 +52,42 @@ class GeminiTranslation(TranslationProvider):
         self.api_key = api_key
 
     @staticmethod
+    def _split_long_segment(
+        words: list[Word], max_duration: float,
+    ) -> list[Segment]:
+        """Recursively split a word group at its largest internal gap until
+        every resulting segment is shorter than *max_duration*."""
+        duration = words[-1].end - words[0].start
+        if duration <= max_duration or len(words) < 2:
+            return [
+                Segment(
+                    start=words[0].start,
+                    end=words[-1].end,
+                    text=" ".join(w.text for w in words),
+                )
+            ]
+
+        # Find the largest gap between consecutive words
+        best_gap_idx = 1
+        best_gap = 0.0
+        for i in range(1, len(words)):
+            gap = words[i].start - words[i - 1].end
+            if gap > best_gap:
+                best_gap = gap
+                best_gap_idx = i
+
+        left = words[:best_gap_idx]
+        right = words[best_gap_idx:]
+        return (
+            GeminiTranslation._split_long_segment(left, max_duration)
+            + GeminiTranslation._split_long_segment(right, max_duration)
+        )
+
+    @staticmethod
     def _group_into_sentences(
-        words: list[Word], pause_threshold: float = PAUSE_THRESHOLD
+        words: list[Word],
+        pause_threshold: float = PAUSE_THRESHOLD,
+        max_duration: float = MAX_SEGMENT_DURATION,
     ) -> list[Segment]:
         if not words:
             return []
@@ -60,23 +95,15 @@ class GeminiTranslation(TranslationProvider):
         current: list[Word] = [words[0]]
         for word in words[1:]:
             if word.start - current[-1].end >= pause_threshold:
-                sentences.append(
-                    Segment(
-                        start=current[0].start,
-                        end=current[-1].end,
-                        text=" ".join(w.text for w in current),
-                    )
+                sentences.extend(
+                    GeminiTranslation._split_long_segment(current, max_duration)
                 )
                 current = [word]
             else:
                 current.append(word)
         if current:
-            sentences.append(
-                Segment(
-                    start=current[0].start,
-                    end=current[-1].end,
-                    text=" ".join(w.text for w in current),
-                )
+            sentences.extend(
+                GeminiTranslation._split_long_segment(current, max_duration)
             )
         return sentences
 
