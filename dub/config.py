@@ -26,17 +26,17 @@ class Settings(BaseSettings):
     gemini_api_key: str = ""
 
     # Iterative refinement
-    max_generations: int = 4
-    samples_per_generation: int = 10
-    top_k_samples: int = 5
+    max_generations: int = 2
+    samples_per_generation: int = 4
+    top_k_samples: int = 3
     plateau_threshold: float = 2.0
     min_fluency_score: float = 98.0
     eval_script_target_duration: float = 30.0
 
     # Duration fitting
     duration_tolerance: float = 0.10
-    max_fit_attempts: int = 5
-    samples_per_step: int = 5
+    max_fit_attempts: int = 3
+    samples_per_step: int = 2
     speed_min: float = 0.85
     speed_max: float = 1.3
 
